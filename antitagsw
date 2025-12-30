@@ -1,0 +1,204 @@
+// ini untuk fitur antitagsw dan laporan harian 
+======================================================================
+import fs from "fs";
+import path from "path";
+
+/* ================= INIT GLOBAL ================= */
+
+global.antiTagSW ??= {
+    enable: true, // default aktif saat plugin load
+    maxWarn: 3, // warning maksimal
+    kick: true // kick auto jika over warning
+};
+
+/* ================= DB ================= */
+
+const DB_DIR = "./database";
+const DB_FILE = path.join(DB_DIR, "antitagsw.json");
+
+function initDB() {
+    if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
+    if (!fs.existsSync(DB_FILE)) {
+        fs.writeFileSync(
+            DB_FILE,
+            JSON.stringify(
+                {
+                    lastReportDate: "",
+                    groups: {},
+                    whitelist: [],
+                    daily: { warn: 0, kick: 0, users: {} }
+                },
+                null,
+                2
+            )
+        );
+    }
+}
+
+function loadDB() {
+    initDB();
+    return JSON.parse(fs.readFileSync(DB_FILE));
+}
+
+function saveDB(db) {
+    fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+}
+
+/* ================= TIME ================= */
+
+function todayWIB() {
+    return new Date().toLocaleDateString("en-CA", {
+        timeZone: "Asia/Jakarta"
+    });
+}
+
+/* ================= OWNER REPORT ================= */
+
+async function sendPrivateOwner(conn, text) {
+    const owners =
+        (conn.owner && conn.owner.map(v => v + "@s.whatsapp.net")) ||
+        (global.owner && global.owner.map(v => v + "@s.whatsapp.net")) ||
+        [];
+
+    for (const jid of owners) {
+        await conn.sendMessage(jid, { text });
+    }
+}
+
+async function checkDailyReport(conn, db) {
+    const today = todayWIB();
+    if (db.lastReportDate === today) return;
+
+    const text = `REKAP HARIAN ANTI TAG SW
+
+Tanggal        : ${today}
+Grup Aktif     : ${Object.keys(db.groups).length}
+Pelanggar      : ${Object.keys(db.daily.users).length}
+Total Warning  : ${db.daily.warn}
+Total Kick     : ${db.daily.kick}
+
+Status         : ${
+        db.daily.warn || db.daily.kick ? "PERLU PERHATIAN" : "AMAN"
+    }`;
+
+    await sendPrivateOwner(conn, text);
+
+    db.groups = {};
+    db.daily = { warn: 0, kick: 0, users: {} };
+    db.lastReportDate = today;
+    saveDB(db);
+}
+
+/* ================= BEFORE ================= */
+
+export async function before(m, { conn, isOwner }) {
+    if (!m.isGroup || !m.message) return;
+
+    const cfg = global.antiTagSW;
+    if (!cfg.enable) return;
+
+    const db = loadDB();
+    await checkDailyReport(conn, db);
+
+    const proto = m.message.protocolMessage;
+    if (!proto || proto.type !== 25) return;
+
+    const botJid = conn.user.id;
+    if (!(proto.statusMentionedJid || []).includes(botJid)) return;
+    if (isOwner) return;
+    if (db.whitelist.includes(m.chat)) return;
+
+    const meta = await conn.groupMetadata(m.chat);
+    const bot = meta.participants.find(v => v.id === botJid);
+    if (!bot?.admin) return;
+
+    const user = m.key.participant || m.sender;
+
+    db.groups[m.chat] ??= {};
+    db.groups[m.chat][user] = (db.groups[m.chat][user] || 0) + 1;
+
+    await conn.sendMessage(m.chat, {
+        delete: {
+            remoteJid: m.chat,
+            fromMe: false,
+            id: m.key.id,
+            participant: m.key.participant
+        }
+    });
+
+    const warn = db.groups[m.chat][user];
+
+    db.daily.warn++;
+    db.daily.users[user] = (db.daily.users[user] || 0) + 1;
+
+    if (warn >= cfg.maxWarn && cfg.kick) {
+        await conn.groupParticipantsUpdate(m.chat, [user], "remove");
+        delete db.groups[m.chat][user];
+        db.daily.kick++;
+    }
+
+    await sendPrivateOwner(
+        conn,
+        `ANTI TAG SW (PRIVATE)
+
+User   : ${user}
+Grup   : ${meta.subject}
+Warn   : ${warn}/${cfg.maxWarn}
+Aksi   : ${warn >= cfg.maxWarn ? "KICK" : "WARNING"}`
+    );
+
+    saveDB(db);
+}
+
+/* ================= HANDLER ================= */
+
+let handler = async (m, { args, isOwner }) => {
+    if (!isOwner) return m.reply("Owner only.");
+
+    const db = loadDB();
+    const cmd = args[0]?.toLowerCase();
+
+    global.antiTagSW ??= { enable: true, maxWarn: 3, kick: true };
+
+    if (cmd === "on") {
+        global.antiTagSW.enable = true;
+        m.reply("✅ Anti Tag SW ON");
+    } else if (cmd === "off") {
+        global.antiTagSW.enable = false;
+        m.reply("❌ Anti Tag SW OFF");
+    } else if (cmd === "wl") {
+        const sub = args[1];
+        if (sub === "add") {
+            if (!db.whitelist.includes(m.chat)) db.whitelist.push(m.chat);
+            saveDB(db);
+            m.reply("✅ Whitelist ditambahkan");
+        } else if (sub === "del") {
+            db.whitelist = db.whitelist.filter(v => v !== m.chat);
+            saveDB(db);
+            m.reply("❌ Whitelist dihapus");
+        } else {
+            m.reply("Usage: antitagsw wl add | del");
+        }
+    } else {
+        m.reply(
+            `Command:
+.antitagsw on/off
+.antitagsw wl add | del`
+        );
+    }
+};
+
+handler.help = ["antitagsw"];
+handler.tags = ["group"];
+handler.command = /^antitagsw$/i;
+handler.owner = true;
+handler.botAdmin = true;
+export default handler;
+
+// dan ini di simpan di setting atau config
+===============================================================
+//TEMPAT GLOBAL GROUP
+global.antiTagSW ??= {
+    maxWarn: 3, // maksimal warning sebelum kick
+    kick: true // kick aktif atau tidak
+};
