@@ -1,1 +1,1 @@
-# Bagi-bagi by ado
+# Bagi-bagi code by ado
