@@ -4,15 +4,13 @@ import fs from "fs";
 import path from "path";
 
 /* ================= INIT GLOBAL ================= */
-
 global.antiTagSW ??= {
-    enable: true, // default aktif saat plugin load
-    maxWarn: 3, // warning maksimal
-    kick: true // kick auto jika over warning
+    enable: true,
+    maxWarn: 3,
+    kick: true
 };
 
 /* ================= DB ================= */
-
 const DB_DIR = "./database";
 const DB_FILE = path.join(DB_DIR, "antitagsw.json");
 
@@ -45,15 +43,11 @@ function saveDB(db) {
 }
 
 /* ================= TIME ================= */
-
 function todayWIB() {
-    return new Date().toLocaleDateString("en-CA", {
-        timeZone: "Asia/Jakarta"
-    });
+    return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jakarta" });
 }
 
 /* ================= OWNER REPORT ================= */
-
 async function sendPrivateOwner(conn, text) {
     const owners =
         (conn.owner && conn.owner.map(v => v + "@s.whatsapp.net")) ||
@@ -89,22 +83,29 @@ Status         : ${
     saveDB(db);
 }
 
-/* ================= BEFORE ================= */
-
-export async function before(m, { conn, isOwner }) {
+/* ================= DETEKSI ANTI TAG SW ================= */
+export async function detectAntiTagSW(m, { conn, isOwner }) {
     if (!m.isGroup || !m.message) return;
-
     const cfg = global.antiTagSW;
     if (!cfg.enable) return;
 
     const db = loadDB();
     await checkDailyReport(conn, db);
 
-    const proto = m.message.protocolMessage;
-    if (!proto || proto.type !== 25) return;
-
     const botJid = conn.user.id;
-    if (!(proto.statusMentionedJid || []).includes(botJid)) return;
+
+    // 1️⃣ Chat biasa mention bot
+    let mentioned = [];
+    if (m.message.extendedTextMessage?.contextInfo?.mentionedJid)
+        mentioned = m.message.extendedTextMessage.contextInfo.mentionedJid;
+
+    // 2️⃣ Status mention / SW
+    if (m.message.groupStatusMentionMessage?.mentionedJid)
+        mentioned.push(...m.message.groupStatusMentionMessage.mentionedJid);
+
+    // Filter unique
+    mentioned = [...new Set(mentioned)];
+    if (!mentioned.includes(botJid)) return; // Kalau bot gak kena tag
     if (isOwner) return;
     if (db.whitelist.includes(m.chat)) return;
 
@@ -113,10 +114,10 @@ export async function before(m, { conn, isOwner }) {
     if (!bot?.admin) return;
 
     const user = m.key.participant || m.sender;
-
     db.groups[m.chat] ??= {};
     db.groups[m.chat][user] = (db.groups[m.chat][user] || 0) + 1;
 
+    // Delete pesan
     await conn.sendMessage(m.chat, {
         delete: {
             remoteJid: m.chat,
@@ -127,31 +128,36 @@ export async function before(m, { conn, isOwner }) {
     });
 
     const warn = db.groups[m.chat][user];
-
     db.daily.warn++;
     db.daily.users[user] = (db.daily.users[user] || 0) + 1;
 
+    let action = "WARNING";
     if (warn >= cfg.maxWarn && cfg.kick) {
         await conn.groupParticipantsUpdate(m.chat, [user], "remove");
         delete db.groups[m.chat][user];
         db.daily.kick++;
+        action = "KICK";
     }
 
     await sendPrivateOwner(
         conn,
-        `ANTI TAG SW (PRIVATE)
+        `ANTI TAG SW (DETEKSI REAL-TIME)
 
 User   : ${user}
 Grup   : ${meta.subject}
 Warn   : ${warn}/${cfg.maxWarn}
-Aksi   : ${warn >= cfg.maxWarn ? "KICK" : "WARNING"}`
+Aksi   : ${action}`
     );
 
     saveDB(db);
 }
 
-/* ================= HANDLER ================= */
+/* ================= BEFORE HANDLER ================= */
+export async function before(m, { conn, isOwner }) {
+    await detectAntiTagSW(m, { conn, isOwner });
+}
 
+/* ================= COMMAND HANDLER ================= */
 let handler = async (m, { args, isOwner }) => {
     if (!isOwner) return m.reply("Owner only.");
 
@@ -192,6 +198,7 @@ handler.help = ["antitagsw"];
 handler.tags = ["group"];
 handler.command = /^antitagsw$/i;
 handler.owner = true;
+handler.group = true;
 handler.botAdmin = true;
 export default handler;
 
