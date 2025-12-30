@@ -1,1 +1,0 @@
-# Bagi-bagi code by ado
